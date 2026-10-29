@@ -21,6 +21,14 @@ def load_config(path="configs/train.yaml"):
     with p.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+def adapter_matches_base(adapter_dir, base_model):
+    config_path = Path(adapter_dir) / "adapter_config.json"
+    if not config_path.is_file():
+        return False
+    with config_path.open("r", encoding="utf-8") as f:
+        adapter_config = json.load(f)
+    return adapter_config.get("base_model_name_or_path") == base_model
+
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -38,11 +46,115 @@ def normalize_sql(sql):
     sql = re.sub(r"\s+", " ", sql)
     return sql.lower()
 
-def format_prompt(schema, question, examples=""):
-    context = f"Relevant examples:\n{examples}\n" if examples else ""
-    return (
-        "Convert the question into a SQL query using only the supplied schema. "
-        "Return SQL only, with no explanation.\n"
-        f"{context}Schema:\n{schema.strip()}\n"
-        f"Question: {question.strip()}\nSQL:"
+def is_sql_output(text):
+    return bool(
+        re.match(
+            r"^\s*(?:SELECT|WITH|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|PRAGMA|EXPLAIN)\b",
+            text,
+            re.IGNORECASE,
+        )
     )
+
+def _matching_parenthesis(text, open_index):
+    depth = 0
+    quote = None
+    index = open_index
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                if index + 1 < len(text) and text[index + 1] == quote:
+                    index += 1
+                else:
+                    quote = None
+        elif char in ("'", '"', "`"):
+            quote = char
+        elif char == "[":
+            quote = "]"
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+def _split_schema_columns(definition):
+    columns = []
+    start = 0
+    depth = 0
+    quote = None
+    index = 0
+    while index < len(definition):
+        char = definition[index]
+        if quote:
+            if char == quote:
+                if index + 1 < len(definition) and definition[index + 1] == quote:
+                    index += 1
+                else:
+                    quote = None
+        elif char in ("'", '"', "`"):
+            quote = char
+        elif char == "[":
+            quote = "]"
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            columns.append(definition[start:index].strip())
+            start = index + 1
+        index += 1
+    columns.append(definition[start:].strip())
+    return columns
+
+def _unquote_identifier(identifier):
+    if identifier.startswith('"') and identifier.endswith('"'):
+        return identifier[1:-1].replace('""', '"')
+    if identifier.startswith("`") and identifier.endswith("`"):
+        return identifier[1:-1].replace("``", "`")
+    if identifier.startswith("[") and identifier.endswith("]"):
+        return identifier[1:-1]
+    return identifier
+
+def schema_to_tables(schema):
+    create_table = re.compile(
+        r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        r'(?P<table>"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]+\]|[^\s(]+)\s*\(',
+        re.IGNORECASE,
+    )
+    column_name = re.compile(
+        r'^("(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]+\]|[^\s]+)'
+    )
+    tables = []
+    for match in create_table.finditer(schema):
+        open_index = match.end() - 1
+        close_index = _matching_parenthesis(schema, open_index)
+        if close_index is None:
+            continue
+        name = _unquote_identifier(match.group("table"))
+        columns = []
+        for definition in _split_schema_columns(schema[open_index + 1:close_index]):
+            if re.match(
+                r"^(?:CONSTRAINT|PRIMARY|FOREIGN|UNIQUE|CHECK|INDEX|KEY|EXCLUDE)\b",
+                definition,
+                re.IGNORECASE,
+            ):
+                continue
+            column = column_name.match(definition)
+            if column:
+                columns.append(_unquote_identifier(column.group(1)))
+        if columns:
+            tables.append(f"{name}({','.join(columns)})")
+    return ", ".join(tables) if tables else schema.strip()
+
+def format_prompt(schema, question, examples=""):
+    tables = schema_to_tables(schema)
+    prompt = (
+        "convert question and table into SQL query. "
+        f"tables: {tables}. question: {question.strip()}"
+    )
+    if examples:
+        prompt = f"{prompt}\nRelevant examples:\n{examples}"
+    return prompt

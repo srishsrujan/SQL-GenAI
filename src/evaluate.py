@@ -4,13 +4,32 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from peft import PeftModel
-from src.common import DATA_DIR, ROOT, REPORT_DIR, load_config, format_prompt, normalize_sql, write_json
+from src.common import (
+    DATA_DIR,
+    ROOT,
+    REPORT_DIR,
+    adapter_matches_base,
+    format_prompt,
+    load_config,
+    normalize_sql,
+    write_json,
+)
 from src.retrieval import ExampleRetriever
 
 def generate(model, tokenizer, prompt, device, max_new_tokens=160):
-    tokens = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512).to(device)
+    tokens = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=512,
+    ).to(device)
     with torch.no_grad():
-        out = model.generate(**tokens, max_new_tokens=max_new_tokens, num_beams=2)
+        out = model.generate(
+            **tokens,
+            max_new_tokens=max_new_tokens,
+            num_beams=10,
+            early_stopping=True,
+        )
     return tokenizer.decode(out[0], skip_special_tokens=True).strip()
 
 def main():
@@ -33,8 +52,10 @@ def main():
     tuned = None
     model_dir = ROOT / cfg["final_model_dir"]
     if not args.base_only:
-        if not model_dir.exists():
-            raise FileNotFoundError("Fine-tuned checkpoint missing. Run training first or use --base-only.")
+        if not adapter_matches_base(model_dir, cfg["base_model"]):
+            raise FileNotFoundError(
+                "A compatible fine-tuned adapter is missing. Run training first or use --base-only."
+            )
         tuned = PeftModel.from_pretrained(AutoModelForSeq2SeqLM.from_pretrained(cfg["base_model"]), model_dir)
         tuned.to(device).eval()
     rows = []

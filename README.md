@@ -1,6 +1,6 @@
 # SchemaSQL — Natural Language to SQL with Retrieval + LoRA
 
-A WebWiz Sophomore Induction 2026–27 AI/ML-track project. SchemaSQL turns a database schema and a natural-language question into a SQL query. It uses the Hugging Face `b-mc2/sql-create-context` dataset, a small seq2seq language model, optional PEFT/LoRA fine-tuning, schema/question embeddings with a FAISS index, and a Streamlit interface.
+A WebWiz Sophomore Induction 2026–27 AI/ML-track project. SchemaSQL turns a database schema and a natural-language question into a SQL query. It uses the Hugging Face `b-mc2/sql-create-context` dataset, the schema-aware `juierror/flan-t5-text2sql-with-schema-v2` model, optional PEFT/LoRA fine-tuning, schema/question embeddings with a FAISS index, and a Streamlit interface.
 
 > **Honest status:** the repository is a complete runnable training/evaluation pipeline, but model training, benchmark scores, and Hugging Face upload are outputs you generate in your own environment. They are not fabricated or pre-filled. Fine-tuning needs a compatible GPU for a practical run; CPU mode is for smoke tests.
 
@@ -75,7 +75,7 @@ For a GPU with enough memory:
 python -m src.train --config configs/train.yaml
 ```
 
-The default model is `google/flan-t5-small` (about 80M parameters). The script uses LoRA and records training/validation losses. Start with 1 epoch and a small subset if compute is limited.
+The default model is `juierror/flan-t5-text2sql-with-schema-v2` (about 248M parameters), already fine-tuned for schema-aware text-to-SQL. The script applies LoRA to this model and records training/validation losses. Start with 1 epoch and a small subset if compute is limited. The model is licensed CC-BY-SA-4.0; retain attribution and follow that license when redistributing it.
 
 ### 4. Evaluate base vs fine-tuned model
 
@@ -114,12 +114,12 @@ After running evaluation, the app also displays held-out exact-match accuracy an
 2. In [Streamlit Community Cloud](https://share.streamlit.io/), create an app from the repository, select the `main` branch, and set the entrypoint to `app.py`.
 3. Select Python 3.11 in the app's advanced settings, then deploy.
 
-The first startup downloads the public base model and embedding model from Hugging Face and may take a few minutes. Generated datasets, retrieval indexes, fine-tuned adapters, and evaluation reports are excluded from Git, so a fresh hosted deployment uses the base model and has no local retrieval examples or evaluation metrics. To use those trained outputs in a deployment, provide them through a separate artifact/model host and configure the app to load them there.
+The first startup downloads the public text-to-SQL model from Hugging Face and may take a few minutes. Generated datasets, retrieval indexes, fine-tuned adapters, and evaluation reports are excluded from Git, so a fresh hosted deployment uses the schema-aware pretrained text-to-SQL model and has no local retrieval examples or evaluation metrics. To use newly trained LoRA weights in a deployment, provide them through a separate artifact/model host and configure the app to load them there.
 
 ## Configuration and compute
 
 - Dataset: `b-mc2/sql-create-context` on Hugging Face Datasets.
-- Base model: `google/flan-t5-small` (well under 3B parameters).
+- Base text-to-SQL model: [`juierror/flan-t5-text2sql-with-schema-v2`](https://huggingface.co/juierror/flan-t5-text2sql-with-schema-v2), fine-tuned from FLAN-T5 and licensed CC-BY-SA-4.0.
 - PEFT: LoRA on attention projection layers.
 - Retrieval: `sentence-transformers/all-MiniLM-L6-v2` + FAISS cosine similarity.
 - Default max input length: 512 tokens; target length: 256 tokens.

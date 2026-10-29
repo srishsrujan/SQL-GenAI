@@ -5,7 +5,14 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-from src.common import REPORT_DIR, ROOT, format_prompt, load_config
+from src.common import (
+    REPORT_DIR,
+    ROOT,
+    adapter_matches_base,
+    format_prompt,
+    is_sql_output,
+    load_config,
+)
 from src.retrieval import ExampleRetriever
 from src.upload_hub import upload_model
 
@@ -152,6 +159,7 @@ st.markdown(
 
 cfg = load_config()
 model_dir = ROOT / cfg["final_model_dir"]
+adapter_compatible = adapter_matches_base(model_dir, cfg["base_model"])
 index_dir = ROOT / "artifacts" / "retrieval"
 retrieval_ready = (index_dir / "rows.json").exists() and (index_dir / "vectors.npy").exists()
 evaluation_path = REPORT_DIR / "evaluation.json"
@@ -183,10 +191,12 @@ with st.sidebar:
     st.markdown("#### Workspace settings")
     use_finetuned = st.toggle(
         "Fine-tuned LoRA adapter",
-        value=model_dir.exists(),
-        disabled=not model_dir.exists(),
-        help="Train the LoRA adapter before enabling this option.",
+        value=adapter_compatible,
+        disabled=not adapter_compatible,
+        help="Train a LoRA adapter from the currently configured base model before enabling this option.",
     )
+    if model_dir.exists() and not adapter_compatible:
+        st.caption("The local adapter was trained from a different base model and cannot be used here.")
     use_retrieval = st.toggle(
         "Retrieve similar examples",
         value=retrieval_ready,
@@ -199,7 +209,7 @@ with st.sidebar:
         'Review every query before using it with a database.</div>',
         unsafe_allow_html=True,
     )
-    if model_dir.exists():
+    if adapter_compatible:
         with st.expander("Publish LoRA adapter"):
             st.caption("Uses your local Hugging Face CLI login or HF_TOKEN.")
             repo_id = st.text_input(
@@ -298,10 +308,23 @@ if submitted:
                     max_length=int(cfg["max_input_length"]),
                 ).to(device)
                 with torch.no_grad():
-                    output = model.generate(**tokens, max_new_tokens=160, num_beams=2)
+                    output = model.generate(
+                        **tokens,
+                        max_new_tokens=128,
+                        num_beams=10,
+                        early_stopping=True,
+                    )
                 generated_sql = tokenizer.decode(output[0], skip_special_tokens=True).strip()
-            st.session_state["generated_sql"] = generated_sql
-            st.session_state["generated_examples"] = examples
+            if not is_sql_output(generated_sql):
+                st.session_state.pop("generated_sql", None)
+                st.session_state.pop("generated_examples", None)
+                st.error(
+                    "The model did not return SQL. Try a more specific question and check that "
+                    "the requested columns exist in the schema."
+                )
+            else:
+                st.session_state["generated_sql"] = generated_sql
+                st.session_state["generated_examples"] = examples
         except Exception as exc:
             st.error(f"Generation failed: {exc}")
 

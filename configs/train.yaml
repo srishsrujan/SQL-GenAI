@@ -1,5 +1,5 @@
 dataset_name: b-mc2/sql-create-context
-base_model: google/flan-t5-small
+base_model: juierror/flan-t5-text2sql-with-schema-v2
 embedding_model: sentence-transformers/all-MiniLM-L6-v2
 max_samples: 3000
 validation_size: 0.1
