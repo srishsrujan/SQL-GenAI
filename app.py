@@ -189,7 +189,8 @@ with st.sidebar:
     )
     use_retrieval = st.toggle(
         "Retrieve similar examples",
-        value=True,
+        value=retrieval_ready,
+        disabled=not retrieval_ready,
         help="Add semantically similar training examples as context.",
     )
     top_k = st.slider("Examples to retrieve", 1, 5, 3, disabled=not use_retrieval)
