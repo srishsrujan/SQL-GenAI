@@ -1,20 +1,12 @@
-import json
-
 import streamlit as st
 import torch
-from peft import PeftModel
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from src.common import (
-    REPORT_DIR,
-    ROOT,
-    adapter_matches_base,
     format_prompt,
     is_sql_output,
     load_config,
 )
-from src.retrieval import ExampleRetriever
-from src.upload_hub import upload_model
 
 st.set_page_config(
     page_title="SchemaSQL | Text to SQL",
@@ -52,14 +44,6 @@ st.markdown(
     }
     [data-testid="stSidebar"] * { color: #e8edf7; }
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #aab6cb; }
-    [data-testid="stSidebar"] [data-testid="stExpander"] {
-        background: rgba(255,255,255,.045);
-        border: 1px solid rgba(255,255,255,.10);
-        border-radius: 12px;
-    }
-    [data-testid="stSidebar"] input { color: #17243b !important; }
-    [data-testid="stSidebar"] [data-testid="stCheckbox"] label,
-    [data-testid="stSidebar"] [data-testid="stToggle"] label { color: #e8edf7; }
     h1, h2, h3, [data-testid="stMetricValue"] { font-family: 'Manrope', sans-serif; color: var(--ink); }
     [data-testid="stMetric"] {
         background: #fff;
@@ -158,27 +142,15 @@ st.markdown(
 )
 
 cfg = load_config()
-model_dir = ROOT / cfg["final_model_dir"]
-adapter_compatible = adapter_matches_base(model_dir, cfg["base_model"])
-index_dir = ROOT / "artifacts" / "retrieval"
-retrieval_ready = (index_dir / "rows.json").exists() and (index_dir / "vectors.npy").exists()
-evaluation_path = REPORT_DIR / "evaluation.json"
 
 
 @st.cache_resource
-def load_generator(base_model, adapter_dir, use_finetuned):
+def load_generator(base_model):
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     model = AutoModelForSeq2SeqLM.from_pretrained(base_model)
-    if use_finetuned:
-        model = PeftModel.from_pretrained(model, adapter_dir)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device).eval()
     return tokenizer, model, device
-
-
-@st.cache_resource
-def load_retriever(model_name):
-    return ExampleRetriever(model_name=model_name)
 
 
 with st.sidebar:
@@ -188,67 +160,27 @@ with st.sidebar:
     )
     st.caption("AI / ML TRACK  ·  TEXT TO SQL")
     st.markdown("---")
-    st.markdown("#### Workspace settings")
-    use_finetuned = st.toggle(
-        "Fine-tuned LoRA adapter",
-        value=adapter_compatible,
-        disabled=not adapter_compatible,
-        help="Train a LoRA adapter from the currently configured base model before enabling this option.",
-    )
-    if model_dir.exists() and not adapter_compatible:
-        st.caption("The local adapter was trained from a different base model and cannot be used here.")
-    use_retrieval = st.toggle(
-        "Retrieve similar examples",
-        value=retrieval_ready,
-        disabled=not retrieval_ready,
-        help="Add semantically similar training examples as context.",
-    )
-    top_k = st.slider("Examples to retrieve", 1, 5, 3, disabled=not use_retrieval)
     st.markdown(
         '<div class="sidebar-note">Generated SQL is a suggestion, not an execution. '
         'Review every query before using it with a database.</div>',
         unsafe_allow_html=True,
     )
-    if adapter_compatible:
-        with st.expander("Publish LoRA adapter"):
-            st.caption("Uses your local Hugging Face CLI login or HF_TOKEN.")
-            repo_id = st.text_input(
-                "Hugging Face model repository",
-                placeholder="username/schemasql-lora",
-            )
-            private_repo = st.checkbox("Create a private repository", value=False)
-            if st.button("Upload model and model card", use_container_width=True):
-                if not repo_id.strip():
-                    st.error("Enter a Hugging Face repository ID.")
-                else:
-                    try:
-                        with st.spinner("Uploading adapter and model card..."):
-                            upload_model(model_dir, repo_id.strip(), private=private_repo)
-                        st.success(f"Uploaded to https://huggingface.co/{repo_id.strip()}")
-                    except Exception as exc:
-                        st.error(f"Upload failed: {exc}")
 
 st.markdown(
     """
     <div class="hero">
       <div class="eyebrow">Schema-aware query workspace</div>
       <h1>Ask your data in plain English.</h1>
-      <p>Turn natural-language questions into SQL, grounded in your schema and enhanced with relevant examples.</p>
+      <p>Turn natural-language questions into SQL, grounded in your schema.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-metrics = st.columns(4)
-metrics[0].metric("Base model", cfg["base_model"].split("/")[-1])
-metrics[1].metric("Fine-tuned adapter", "Ready" if model_dir.exists() else "Not trained")
-metrics[2].metric("Example retrieval", "Ready" if retrieval_ready else "Index not built")
-metrics[3].metric("Evaluation", "Available" if evaluation_path.exists() else "Not run")
-
 st.markdown('<div class="section-heading">Build a query</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="section-hint">Provide the schema and describe the result you need. '
-    'Your query is generated locally by the selected model.</div>',
+    'Your query is generated locally by the base model.</div>',
     unsafe_allow_html=True,
 )
 
@@ -281,26 +213,11 @@ with st.form("sql_generation_form", border=False):
 if submitted:
     if not schema.strip() or not question.strip():
         st.error("Please provide both a schema and a question.")
-    elif use_finetuned and not model_dir.exists():
-        st.error("Fine-tuned model not found. Run `python -m src.train` first.")
     else:
-        examples = []
-        if use_retrieval:
-            try:
-                retriever = load_retriever(cfg["embedding_model"])
-                examples = retriever.search(schema, question, top_k)
-            except Exception as exc:
-                st.info(f"Retrieval unavailable ({exc}). Continuing without retrieved examples.")
-        example_text = "\n\n".join(
-            f"Schema: {example['schema']}\nQuestion: {example['question']}\nSQL: {example['sql']}"
-            for example in examples
-        )
-        prompt = format_prompt(schema, question, example_text)
+        prompt = format_prompt(schema, question)
         try:
             with st.spinner("Loading model and generating your query..."):
-                tokenizer, model, device = load_generator(
-                    cfg["base_model"], str(model_dir), use_finetuned
-                )
+                tokenizer, model, device = load_generator(cfg["base_model"])
                 tokens = tokenizer(
                     prompt,
                     return_tensors="pt",
@@ -317,14 +234,12 @@ if submitted:
                 generated_sql = tokenizer.decode(output[0], skip_special_tokens=True).strip()
             if not is_sql_output(generated_sql):
                 st.session_state.pop("generated_sql", None)
-                st.session_state.pop("generated_examples", None)
                 st.error(
                     "The model did not return SQL. Try a more specific question and check that "
                     "the requested columns exist in the schema."
                 )
             else:
                 st.session_state["generated_sql"] = generated_sql
-                st.session_state["generated_examples"] = examples
         except Exception as exc:
             st.error(f"Generation failed: {exc}")
 
@@ -341,50 +256,3 @@ if st.session_state.get("generated_sql"):
         file_name="generated_query.sql",
         mime="text/sql",
     )
-    generated_examples = st.session_state.get("generated_examples", [])
-    if generated_examples:
-        with st.expander(f"Retrieved examples · {len(generated_examples)}"):
-            for number, example in enumerate(generated_examples, 1):
-                st.markdown(f"**Example {number} · similarity {example['score']:.3f}**")
-                st.write(example["question"])
-                st.code(example["sql"], language="sql")
-
-st.markdown("---")
-st.markdown('<div class="section-heading">Model evaluation</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="section-hint">Held-out test results help compare the base model with its fine-tuned version.</div>',
-    unsafe_allow_html=True,
-)
-if evaluation_path.exists():
-    try:
-        evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
-        st.caption(f"Evaluated on {evaluation['test_samples']} held-out examples.")
-        evaluation_columns = st.columns(
-            3 if "finetuned_exact_match_accuracy" in evaluation else 2
-        )
-        evaluation_columns[0].metric(
-            "Base · exact match",
-            f"{evaluation['base_exact_match_accuracy']:.1%}",
-        )
-        evaluation_columns[1].metric(
-            "Base · normalized",
-            f"{evaluation['base_normalized_exact_match_accuracy']:.1%}",
-        )
-        if "finetuned_exact_match_accuracy" in evaluation:
-            evaluation_columns[2].metric(
-                "Fine-tuned · exact match",
-                f"{evaluation['finetuned_exact_match_accuracy']:.1%}",
-            )
-        with st.expander("Example benchmark outputs"):
-            for number, example in enumerate(evaluation.get("examples", []), 1):
-                st.markdown(f"**{number}. {example['question']}**")
-                st.caption(f"Expected: {example['gold_sql']}")
-                st.markdown("Base model")
-                st.code(example["base_prediction"], language="sql")
-                if "finetuned_prediction" in example:
-                    st.markdown("Fine-tuned model")
-                    st.code(example["finetuned_prediction"], language="sql")
-    except (OSError, ValueError, KeyError) as exc:
-        st.error(f"Could not read the evaluation report: {exc}")
-else:
-    st.info("Run `python -m src.evaluate` to show benchmark metrics and example outputs here.")

@@ -19,6 +19,8 @@ tags:
 
 A parameter-efficient fine-tune of `{base_model}` for converting a supplied SQL schema and natural-language question into SQL.
 
+This adapter is a separately trained artifact. The current Streamlit app loads the configured base model only and does not apply this adapter.
+
 ## Intended use
 Educational demonstrations and prototyping on schemas supplied by the user. Review every generated query before execution.
 
@@ -26,7 +28,7 @@ Educational demonstrations and prototyping on schemas supplied by the user. Revi
 `b-mc2/sql-create-context` from Hugging Face Datasets. Please review the dataset card and its license/terms before redistribution.
 
 ## Training
-LoRA fine-tuning using Hugging Face Transformers and PEFT. Replace this section with the actual dataset size, hyperparameters, hardware, and evaluation scores from your run before public release.
+LoRA fine-tuning using Hugging Face Transformers and PEFT. Replace this section with the actual dataset size, hyperparameters, hardware, and evaluation scores from your run before public release. Evaluation is performed separately with `python -m src.evaluate`; the Streamlit app does not display benchmark results.
 
 ## Limitations
 May generate incorrect SQL, assume missing schema details, or fail on dialect-specific syntax. Not intended for unsupervised production database access.
